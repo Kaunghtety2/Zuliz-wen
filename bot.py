@@ -114,7 +114,7 @@ TIMEOUT               = 25
 SPLIT_MB              = 45
 MAX_ASSET_MB          = 150
 RATE_LIMIT_SEC        = 10    # light commands cooldown
-HEAVY_RATE_LIMIT_SEC  = 45    # heavy scan commands cooldown
+HEAVY_RATE_LIMIT_SEC  = 0     # removed cooldown — queue system handles concurrency
 QUEUE_MAX_PER_USER    = 3     # per-user queue slot limit
 # ══════════════════════════════════════════════════
 
@@ -10755,7 +10755,7 @@ def main():
     # ── Init asyncio primitives (event loop must be running) ─
     global download_semaphore, scan_semaphore, _active_scans, db_lock, _dl_queue
     download_semaphore = asyncio.Semaphore(MAX_WORKERS)
-    scan_semaphore     = asyncio.Semaphore(10)  # max 10 concurrent heavy scans (was 5)
+    scan_semaphore     = asyncio.Semaphore(1)   # 1 scan at a time — queue system
     db_lock            = asyncio.Lock()
     _dl_queue          = asyncio.Queue(maxsize=QUEUE_MAX)
 
@@ -11274,6 +11274,13 @@ async def cmd_techstack(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception: pass
 
     prog = asyncio.create_task(_prog())
+    # ── Queue notification: show message if scan is already running ──
+    if scan_semaphore._value == 0:
+        await update.effective_message.reply_text(
+            "📋 *Scan Queue*\n⏳ Scan တစ်ခု run နေသည် — ပြီးမှ အလိုအလျောက် စမည်\n"
+            "_ဘာမှ နှိပ်စရာမလိုဘဲ အောက်မှာ result ပေးမည်_",
+            parse_mode='Markdown'
+        )
     try:
         async with scan_semaphore:
             data = await asyncio.to_thread(_techstack_scan_sync, url, progress_q)
@@ -11907,6 +11914,13 @@ async def cmd_sqli(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception: pass
 
     prog = asyncio.create_task(_prog())
+    # ── Queue notification: show message if scan is already running ──
+    if scan_semaphore._value == 0:
+        await update.effective_message.reply_text(
+            "📋 *Scan Queue*\n⏳ Scan တစ်ခု run နေသည် — ပြီးမှ အလိုအလျောက် စမည်\n"
+            "_ဘာမှ နှိပ်စရာမလိုဘဲ အောက်မှာ result ပေးမည်_",
+            parse_mode='Markdown'
+        )
     try:
         async with scan_semaphore:
             data = await asyncio.to_thread(_sqli_scan_sync, url, progress_q)
@@ -12436,6 +12450,13 @@ async def cmd_xss(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception: pass
 
     prog = asyncio.create_task(_prog())
+    # ── Queue notification: show message if scan is already running ──
+    if scan_semaphore._value == 0:
+        await update.effective_message.reply_text(
+            "📋 *Scan Queue*\n⏳ Scan တစ်ခု run နေသည် — ပြီးမှ အလိုအလျောက် စမည်\n"
+            "_ဘာမှ နှိပ်စရာမလိုဘဲ အောက်မှာ result ပေးမည်_",
+            parse_mode='Markdown'
+        )
     try:
         async with scan_semaphore:
             data = await asyncio.to_thread(_xss_scan_sync, url, progress_q)
@@ -13027,6 +13048,13 @@ async def cmd_paramfuzz(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception: pass
 
     prog = asyncio.create_task(_prog())
+    # ── Queue notification: show message if scan is already running ──
+    if scan_semaphore._value == 0:
+        await update.effective_message.reply_text(
+            "📋 *Scan Queue*\n⏳ Scan တစ်ခု run နေသည် — ပြီးမှ အလိုအလျောက် စမည်\n"
+            "_ဘာမှ နှိပ်စရာမလိုဘဲ အောက်မှာ result ပေးမည်_",
+            parse_mode='Markdown'
+        )
     try:
         async with scan_semaphore:
             data = await asyncio.to_thread(_paramfuzz_sync, url, method, progress_q)
@@ -14408,6 +14436,13 @@ async def cmd_ssti(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception: pass
 
     prog = asyncio.create_task(_prog())
+    # ── Queue notification: show message if scan is already running ──
+    if scan_semaphore._value == 0:
+        await update.effective_message.reply_text(
+            "📋 *Scan Queue*\n⏳ Scan တစ်ခု run နေသည် — ပြီးမှ အလိုအလျောက် စမည်\n"
+            "_ဘာမှ နှိပ်စရာမလိုဘဲ အောက်မှာ result ပေးမည်_",
+            parse_mode='Markdown'
+        )
     try:
         async with scan_semaphore:
             data = await asyncio.to_thread(_ssti_scan_sync, url, progress_q)
@@ -14704,6 +14739,13 @@ async def cmd_openredirect(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception: pass
 
     prog = asyncio.create_task(_prog())
+    # ── Queue notification: show message if scan is already running ──
+    if scan_semaphore._value == 0:
+        await update.effective_message.reply_text(
+            "📋 *Scan Queue*\n⏳ Scan တစ်ခု run နေသည် — ပြီးမှ အလိုအလျောက် စမည်\n"
+            "_ဘာမှ နှိပ်စရာမလိုဘဲ အောက်မှာ result ပေးမည်_",
+            parse_mode='Markdown'
+        )
     try:
         async with scan_semaphore:
             data = await asyncio.to_thread(_openredirect_scan_sync, url, progress_q)
@@ -14863,6 +14905,13 @@ async def cmd_lfi(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception: pass
 
     prog = asyncio.create_task(_prog())
+    # ── Queue notification: show message if scan is already running ──
+    if scan_semaphore._value == 0:
+        await update.effective_message.reply_text(
+            "📋 *Scan Queue*\n⏳ Scan တစ်ခု run နေသည် — ပြီးမှ အလိုအလျောက် စမည်\n"
+            "_ဘာမှ နှိပ်စရာမလိုဘဲ အောက်မှာ result ပေးမည်_",
+            parse_mode='Markdown'
+        )
     try:
         async with scan_semaphore:
             data = await asyncio.to_thread(_lfi_scan_sync, url, progress_q)
@@ -15102,6 +15151,13 @@ async def cmd_secretscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception: pass
 
     prog = asyncio.create_task(_prog())
+    # ── Queue notification: show message if scan is already running ──
+    if scan_semaphore._value == 0:
+        await update.effective_message.reply_text(
+            "📋 *Scan Queue*\n⏳ Scan တစ်ခု run နေသည် — ပြီးမှ အလိုအလျောက် စမည်\n"
+            "_ဘာမှ နှိပ်စရာမလိုဘဲ အောက်မှာ result ပေးမည်_",
+            parse_mode='Markdown'
+        )
     try:
         async with scan_semaphore:
             data = await asyncio.to_thread(_secretscan_sync, url, progress_q)
@@ -15380,6 +15436,13 @@ async def cmd_ssltls(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception: pass
 
     prog = asyncio.create_task(_prog())
+    # ── Queue notification: show message if scan is already running ──
+    if scan_semaphore._value == 0:
+        await update.effective_message.reply_text(
+            "📋 *Scan Queue*\n⏳ Scan တစ်ခု run နေသည် — ပြီးမှ အလိုအလျောက် စမည်\n"
+            "_ဘာမှ နှိပ်စရာမလိုဘဲ အောက်မှာ result ပေးမည်_",
+            parse_mode='Markdown'
+        )
     try:
         async with scan_semaphore:
             data = await asyncio.to_thread(_ssltls_scan_sync, host, progress_q)
