@@ -10718,6 +10718,19 @@ async def cmd_adminset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    # ── Single-instance lock (prevents Conflict on Railway redeploy) ──────
+    import fcntl
+    _lock_file_path = os.path.join(DATA_DIR, "bot.lock")
+    _lock_file = open(_lock_file_path, "w")
+    try:
+        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_file.write(str(os.getpid()))
+        _lock_file.flush()
+    except OSError:
+        print("❌ Another bot instance is already running (lock file held). Exiting.")
+        logger.error("Startup blocked — another instance holds the lock at %s", _lock_file_path)
+        return
+
     if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         print("═"*55)
         print("❌  TOKEN ထည့်ဖို့ မမေ့ပါနဲ့ (Line 70 တွင် directly ထည့်ပါ)")
@@ -10971,6 +10984,14 @@ def main():
         except KeyboardInterrupt:
             print("\n👋 Bot stopped.")
             break
+        except Conflict as e:
+            logger.warning("Conflict (attempt %d): %s — another instance may still be shutting down", attempt, e)
+            if attempt < MAX_RETRIES:
+                _conflict_wait = 30  # wait longer so the old instance fully releases getUpdates
+                print(f"⚠️  Conflict — {_conflict_wait}s စောင့်ပြီး retry ({attempt}/{MAX_RETRIES})...")
+                import time as _time; _time.sleep(_conflict_wait)
+            else:
+                print("❌ Conflict: Only one bot instance can run at a time. Stop any other running instances.")
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║              V20 NEW FEATURES ADDON                          ║
