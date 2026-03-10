@@ -141,6 +141,7 @@ for d in [DOWNLOAD_DIR, RESUME_DIR, APP_ANALYZE_DIR]:
 download_semaphore: asyncio.Semaphore  # initialized in main()
 scan_semaphore:     asyncio.Semaphore  # initialized in main() — max concurrent heavy scans
 _active_scans: dict = {}              # {uid: task_name} — track running scans for /stop
+_scan_tasks:  dict = {}              # {uid: asyncio.Task} — actual task refs for cancellation
 
 # ── Queue system ──────────────────────────────────
 QUEUE_MAX     = 20                    # max queue depth
@@ -2869,7 +2870,16 @@ async def cmd_vuln(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     prog = asyncio.create_task(_prog_loop())
     try:
-        results = await asyncio.to_thread(_vuln_scan_sync, url, progress_q)
+        scan_task = asyncio.ensure_future(asyncio.to_thread(_vuln_scan_sync, url, progress_q))
+        _scan_tasks[uid] = scan_task
+        results = await scan_task
+    except asyncio.CancelledError:
+        prog.cancel()
+        _active_scans.pop(uid, None)
+        _scan_tasks.pop(uid, None)
+        try: await msg.edit_text("🛑 *Vuln scan ရပ်သွားပြီ*", parse_mode='Markdown')
+        except Exception: pass
+        return
     except Exception as e:
         prog.cancel()
         await msg.edit_text(
@@ -2877,6 +2887,7 @@ async def cmd_vuln(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'); return
     finally:
         _active_scans.pop(uid, None)
+        _scan_tasks.pop(uid, None)
         prog.cancel()
 
     report = _format_vuln_report(results)
@@ -3953,6 +3964,7 @@ async def cmd_tech(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"  `{k}: {v[:60]}`")
 
     await msg.edit_text("\n".join(lines), parse_mode='Markdown')
+    _active_scans.pop(uid, None)   # fix: release scan slot
 
 
 # ══════════════════════════════════════════════════
@@ -4865,6 +4877,7 @@ async def cmd_bypass403(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.effective_message.reply_text("\n".join(lines)[:4000], parse_mode='Markdown')
     else:
         await msg.edit_text("\n".join(lines), parse_mode='Markdown')
+    _active_scans.pop(uid, None)   # fix: release scan slot
 
 
 # ══════════════════════════════════════════════════
@@ -8606,29 +8619,34 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     stopped = []
     
-    # Stop active download
-    event = _cancel_flags.get(uid)
+    # ── Stop active download ───────────────────────
+    event = _cancel_flags.pop(uid, None)
     if event and not event.is_set():
         event.set()
         stopped.append("📥 Download")
     
-    # Stop active scan
+    # ── Stop active scan (cancel the asyncio Task) ─
+    scan_task = _scan_tasks.pop(uid, None)
     scan_name = _active_scans.pop(uid, None)
-    if scan_name:
+    if scan_task and not scan_task.done():
+        scan_task.cancel()
+        stopped.append(f"🔍 {scan_name or 'Scan'}")
+    elif scan_name:
+        # scan_name existed but no task ref — still clear it
         stopped.append(f"🔍 {scan_name}")
     
     if stopped:
         items = " + ".join(stopped)
         await update.effective_message.reply_text(
-            f"🛑 *ရပ်နေပါတယ်: {items}*\n"
-            "⚙️ လက်ရှိ operation ပြီးရင် ရပ်မယ်",
+            f"🛑 *ရပ်လိုက်ပါပြီ:* {items}\n"
+            "_(Background task ပြီးမှ အလိုအလျောက် clean up ဖြစ်မည်)_",
             parse_mode='Markdown'
         )
     else:
         await update.effective_message.reply_text(
-            "ℹ️ ရပ်စရာ operation မရှိပါ\n"
-            "Download: `/dl <url>`\n"
-            "Scan: `/scan` `/sqli` `/autopwn` စသည်",
+            "ℹ️ *ရပ်စရာ operation မရှိပါ*\n\n"
+            "Download: `/dl <url>` or `/fullsite <url>`\n"
+            "Scan: `/scan <url>` `/recon <url>` `/ssltls <domain>`",
             parse_mode='Markdown'
         )
 
@@ -8683,28 +8701,36 @@ async def _send_admin_panel(target, db: dict):
     tdl       = sum(u.get("total_downloads",0) for u in db["users"].values())
     banned_n  = sum(1 for u in db["users"].values() if u.get("banned"))
     today_dl  = sum(u["count_today"] for u in db["users"].values() if u.get("last_date")==today)
+    active_sc = len(_active_scans)
+    queue_sz  = _dl_queue.qsize() if _dl_queue else 0
+
     kb = [
         [
-            InlineKeyboardButton("👥 Users",   callback_data="adm_users"),
-            InlineKeyboardButton("📊 Stats",   callback_data="adm_stats"),
+            InlineKeyboardButton("👥 Users",        callback_data="adm_users"),
+            InlineKeyboardButton("📊 Stats",         callback_data="adm_stats"),
         ],
         [
-            InlineKeyboardButton("⚙️ Settings", callback_data="adm_settings"),
+            InlineKeyboardButton("⚙️ Settings",      callback_data="adm_settings"),
+            InlineKeyboardButton("📜 DL Log",         callback_data="adm_log"),
+        ],
+        [
             InlineKeyboardButton(
                 "🔴 Bot OFF" if bot_on else "🟢 Bot ON",
                 callback_data="adm_toggle_bot"
             ),
+            InlineKeyboardButton("🔍 Active Scans",  callback_data="adm_scans"),
         ],
-        [InlineKeyboardButton("📜 Downloads Log", callback_data="adm_log")]
     ]
+    status_line = "🟢 Running" if bot_on else "🔴 Stopped"
     text = (
-        f"👑 *Admin Panel v17.0*\n\n"
-        f"👥 Users: `{tu}` | 🚫 Banned: `{banned_n}`\n"
-        f"📦 Total: `{tdl}` | Today: `{today_dl}`\n"
-        f"Bot: {'🟢 ON' if bot_on else '🔴 OFF'}\n"
-        f"⚡ Concurrent: `{MAX_WORKERS}` | Limit: `{db['settings']['global_daily_limit']}`\n"
-        f"🔒 SSRF/Traversal/RateLimit: ✅\n"
-        f"JS: {'✅' if PUPPETEER_OK else '❌'}"
+        f"👑 *Admin Panel*\n"
+        f"{'━'*22}\n"
+        f"🤖 Bot: {status_line}\n"
+        f"👥 Users: `{tu}` total  |  🚫 Banned: `{banned_n}`\n"
+        f"📦 Downloads: `{tdl}` total  |  Today: `{today_dl}`\n"
+        f"🔍 Active scans: `{active_sc}`  |  Queue: `{queue_sz}`\n"
+        f"⚡ Workers: `{MAX_WORKERS}`  |  Limit: `{db['settings']['global_daily_limit']}/day`\n"
+        f"JS Render: {'✅' if PUPPETEER_OK else '❌ Not installed'}"
     )
     markup = InlineKeyboardMarkup(kb)
     try:
@@ -9206,16 +9232,43 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "adm_settings":
         s  = db["settings"]
-        kb = [[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]]
+        kb = [
+            [InlineKeyboardButton("📋 Commands List", callback_data="adm_cmds")],
+            [InlineKeyboardButton("🔙 Back", callback_data="adm_back")]
+        ]
         await query.edit_message_text(
             f"⚙️ *Settings*\n\n"
-            f"Daily Limit: `{s['global_daily_limit']}` (`/setlimit global <n>`)\n"
-            f"Max Pages: `{s['max_pages']}` (`/setpages <n>`)\n"
-            f"Max Assets: `{s['max_assets']}` (`/setassets <n>`)\n"
-            f"Bot: `{'ON' if s['bot_enabled'] else 'OFF'}`\n"
-            f"Rate Limit: `{RATE_LIMIT_SEC}s` per request\n"
-            f"Max Asset Size: `{MAX_ASSET_MB}MB`\n"
-            f"Split: `{SPLIT_MB}MB`",
+            f"📅 Daily Limit: `{s['global_daily_limit']}`\n"
+            f"📄 Max Pages: `{s['max_pages']}`\n"
+            f"🖼️ Max Assets: `{s['max_assets']}`\n"
+            f"🤖 Bot: `{'🟢 ON' if s['bot_enabled'] else '🔴 OFF'}`\n"
+            f"⏱️ Rate Limit: `{RATE_LIMIT_SEC}s`\n"
+            f"💾 Max Asset: `{MAX_ASSET_MB}MB` | Split: `{SPLIT_MB}MB`\n\n"
+            f"*Change settings with /adminset:*\n"
+            f"`/adminset limit global 5`\n"
+            f"`/adminset pages 100`\n"
+            f"`/adminset assets 1000`",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown'
+        )
+
+    elif data == "adm_cmds":
+        kb = [[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]]
+        await query.edit_message_text(
+            "📋 *Admin Commands*\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "👤 *User Management*\n"
+            "  `/ban <id>` — User ကို ban လုပ်ရန်\n"
+            "  `/unban <id>` — Ban ဖြုတ်ရန်\n"
+            "  `/userinfo <id>` — User info ကြည့်ရန်\n"
+            "  `/allusers` — User စာရင်းကြည့်ရန်\n\n"
+            "⚙️ *Settings*\n"
+            "  `/adminset limit global <n>` — Global limit\n"
+            "  `/adminset limit <id> <n>` — Per-user limit\n"
+            "  `/adminset pages <n>` — Max pages\n"
+            "  `/adminset assets <n>` — Max assets\n\n"
+            "📢 *Other*\n"
+            "  `/broadcast <msg>` — All users ကို message ပို့ရန်\n"
+            "  `/admin` — Panel ပြန်ဖွင့်ရန်",
             reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown'
         )
 
@@ -9247,6 +9300,21 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "adm_back":
         await _send_admin_panel(query, db)
+
+    elif data == "adm_scans":
+        if _active_scans:
+            lines = ["🔍 *Active Scans*\n"]
+            for u_id, sname in _active_scans.items():
+                uinfo = db["users"].get(str(u_id), {})
+                uname = uinfo.get("name", str(u_id))
+                lines.append(f"  • `{u_id}` ({uname}) — *{sname}*")
+        else:
+            lines = ["🔍 *Active Scans*\n", "  ✅ No scans running"]
+        kb = [[InlineKeyboardButton("🔙 Back", callback_data="adm_back")]]
+        try:
+            await query.edit_message_text(
+                "\n".join(lines), reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        except BadRequest: pass
 
 
 # ══════════════════════════════════════════════════
@@ -9284,6 +9352,7 @@ async def cmd_headers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     safe_ok, reason = is_safe_url(url)
     if not safe_ok:
         await update.effective_message.reply_text(f"🚫 `{reason}`", parse_mode='Markdown')
+        _active_scans.pop(uid, None)   # fix
         return
 
     msg = await update.effective_message.reply_text(f"🔍 Headers စစ်နေသည်...", parse_mode='Markdown')
@@ -9300,6 +9369,7 @@ async def cmd_headers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not status:
         await msg.edit_text("❌ Request မအောင်မြင်ဘူး — URL စစ်ပါ")
+        _active_scans.pop(uid, None)   # fix
         return
 
     # Security headers check
@@ -9372,6 +9442,7 @@ async def cmd_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
     safe_ok, reason = is_safe_url(url)
     if not safe_ok:
         await update.effective_message.reply_text(f"🚫 `{reason}`", parse_mode='Markdown')
+        _active_scans.pop(uid, None)   # fix
         return
 
     msg = await update.effective_message.reply_text("🔗 Links ကောက်နေသည်...", parse_mode='Markdown')
@@ -9403,6 +9474,7 @@ async def cmd_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not internal and not external:
         await msg.edit_text("❌ Links မတွေ့ပါ — URL စစ်ပါ")
+        _active_scans.pop(uid, None)   # fix
         return
 
     # Build text report + send as file if large
@@ -10103,12 +10175,12 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⏳ *`{_active_scans[uid]}` running* — ပြီးဆုံးဖို့ စောင့်ပါ\n"
             "သို့မဟုတ် `/stop` နှိပ်ပါ", parse_mode='Markdown')
         return
-    _active_scans[uid] = "Full Scan"
 
     args  = context.args or []
     url   = args[0].strip() if args else ""
     mode  = args[1].lower() if len(args) > 1 else "vuln"
 
+    # ── Show help BEFORE setting _active_scans (bug fix: stuck state) ──
     if not url:
         await update.effective_message.reply_text(
             "🔍 *Security Scanner*\n\n"
@@ -10125,6 +10197,8 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         return
+
+    _active_scans[uid] = "Full Scan"
 
     if not url.startswith('http'):
         url = 'https://' + url
@@ -10197,6 +10271,7 @@ async def cmd_recon(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "  `/recon https://example.com cookies`",
             parse_mode='Markdown'
         )
+        _active_scans.pop(uid, None)   # fix: no-url early exit
         return
 
     if not url.startswith('http'):
@@ -10205,6 +10280,7 @@ async def cmd_recon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     safe_ok, reason = is_safe_url(url)
     if not safe_ok:
         await update.effective_message.reply_text(f"🚫 `{reason}`", parse_mode='Markdown')
+        _active_scans.pop(uid, None)   # fix
         return
 
     context.args = [url]
