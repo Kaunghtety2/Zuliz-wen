@@ -54,12 +54,6 @@ except ImportError:
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")  # Set in Railway environment variables
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
 
-# ── Webhook config (optional — leave blank to use polling) ──────────────────
-# Set WEBHOOK_DOMAIN in env to enable webhook mode (e.g. "https://mybot.railway.app")
-# WEBHOOK_PORT: default 8443 (Railway/VPS) or 443/80 for reverse-proxy setups
-WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN", "").rstrip("/")   # e.g. https://mybot.up.railway.app
-WEBHOOK_PORT   = int(os.getenv("WEBHOOK_PORT", "8443"))
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")               # optional extra security token
 
 # ── Startup validation ──────────────────────────────────────────────────
 if not BOT_TOKEN:
@@ -10842,8 +10836,6 @@ def main():
     print(f"║  SECRET_KEY persistent: ✅               ║")
     print(f"║  Log Rotation 5MB×3:    ✅               ║")
     print(f"║  Rate Limit: ✅ ({RATE_LIMIT_SEC}s)              ║")
-    _mode = f"Webhook ({WEBHOOK_DOMAIN})" if WEBHOOK_DOMAIN else "Polling"
-    print(f"║  Mode      : {_mode[:35]:<35} ║")
     _db_type = "SQLite (WAL)" if os.path.exists(SQLITE_FILE) else "SQLite (init)"
     print(f"║  Database  : {_db_type:<35} ║")
     print(f"║  JS Puppeteer: {'✅' if PUPPETEER_OK else '❌ (optional)'}                        ║")
@@ -10948,73 +10940,37 @@ def main():
     _sqlite_init()
     _migrate_json_to_sqlite()
 
-    # ══════════════════════════════════════════════════════════
-    # 🚀  WEBHOOK vs POLLING — Auto-detect from env var
-    #
-    #  Set WEBHOOK_DOMAIN env var to enable webhook mode:
-    #    WEBHOOK_DOMAIN=https://mybot.up.railway.app
-    #    WEBHOOK_PORT=8443  (default)
-    #
-    #  Leave WEBHOOK_DOMAIN blank → falls back to polling
-    # ══════════════════════════════════════════════════════════
-
+    # ── Retry loop — Network error recovery ───────────────
     MAX_RETRIES = 10
     RETRY_DELAY = 10
 
-    if WEBHOOK_DOMAIN:
-        # ── WEBHOOK MODE ────────────────────────────────────────
-        webhook_url = f"{WEBHOOK_DOMAIN}/{BOT_TOKEN}"
-        print(f"🌐 Starting in WEBHOOK mode")
-        print(f"   URL  : {webhook_url}")
-        print(f"   Port : {WEBHOOK_PORT}")
-        logger.info("Webhook mode: %s (port %d)", webhook_url, WEBHOOK_PORT)
-
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
-            app.run_webhook(
-                listen            = "0.0.0.0",
-                port              = WEBHOOK_PORT,
-                url_path          = BOT_TOKEN,
-                webhook_url       = webhook_url,
-                secret_token      = WEBHOOK_SECRET or None,
-                allowed_updates   = Update.ALL_TYPES,
+            logger.info("Bot starting... (attempt %d/%d)", attempt, MAX_RETRIES)
+            app.run_polling(
+                allowed_updates      = Update.ALL_TYPES,
                 drop_pending_updates = True,
-                max_connections   = 100,   # Telegram max concurrent connections
+                timeout              = 30,
+                poll_interval        = 0.3,
             )
+            break
+        except TimedOut as e:
+            logger.warning("TimedOut (attempt %d): %s", attempt, e)
+            if attempt < MAX_RETRIES:
+                print(f"⚠️  Timeout — {RETRY_DELAY}s နောက်မှ retry ({attempt}/{MAX_RETRIES})...")
+                import time as _time; _time.sleep(RETRY_DELAY)
+            else:
+                print("❌ Max retries ပြည့်ပါပြီ — Network စစ်ပါ")
+        except NetworkError as e:
+            logger.warning("NetworkError (attempt %d): %s", attempt, e)
+            if attempt < MAX_RETRIES:
+                print(f"⚠️  Network error — {RETRY_DELAY}s နောက်မှ retry ({attempt}/{MAX_RETRIES})...")
+                import time as _time; _time.sleep(RETRY_DELAY)
+            else:
+                print("❌ Max retries ပြည့်ပါပြီ — Network စစ်ပါ")
         except KeyboardInterrupt:
             print("\n👋 Bot stopped.")
-
-    else:
-        # ── POLLING MODE (fallback) ─────────────────────────────
-        print("📡 Starting in POLLING mode (set WEBHOOK_DOMAIN env var for webhook)")
-        logger.info("Polling mode — set WEBHOOK_DOMAIN to enable webhook")
-
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                logger.info("Bot starting... (attempt %d/%d)", attempt, MAX_RETRIES)
-                app.run_polling(
-                    allowed_updates      = Update.ALL_TYPES,
-                    drop_pending_updates = True,
-                    timeout              = 30,
-                    poll_interval        = 0.3,
-                )
-                break
-            except TimedOut as e:
-                logger.warning("TimedOut (attempt %d): %s", attempt, e)
-                if attempt < MAX_RETRIES:
-                    print(f"⚠️  Timeout — {RETRY_DELAY}s နောက်မှ retry ({attempt}/{MAX_RETRIES})...")
-                    import time as _time; _time.sleep(RETRY_DELAY)
-                else:
-                    print("❌ Max retries ပြည့်ပါပြီ — Network စစ်ပါ")
-            except NetworkError as e:
-                logger.warning("NetworkError (attempt %d): %s", attempt, e)
-                if attempt < MAX_RETRIES:
-                    print(f"⚠️  Network error — {RETRY_DELAY}s နောက်မှ retry ({attempt}/{MAX_RETRIES})...")
-                    import time as _time; _time.sleep(RETRY_DELAY)
-                else:
-                    print("❌ Max retries ပြည့်ပါပြီ — Network စစ်ပါ")
-            except KeyboardInterrupt:
-                print("\n👋 Bot stopped.")
-                break
+            break
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║              V20 NEW FEATURES ADDON                          ║
