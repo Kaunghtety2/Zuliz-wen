@@ -1,5 +1,7 @@
-python-telegram-bot==21.6
-requests==2.32.3
+python-telegram-bot[job-queue]==21.5
+aiohttp[speedups]==3.9.5
 beautifulsoup4==4.12.3
-urllib3==2.2.3
+lxml==5.2.2
 python-dotenv==1.0.1
+aiodns==3.2.0
+uvloop==0.19.0
